@@ -101,12 +101,21 @@ def list_observations(
 
 
 def series_for_indicator(astronaut_id: int, indicator_code: str) -> list[dict]:
-    """Serie temporal de un indicador para un astronauta — insumo directo del detector de anomalías."""
+    """Serie temporal de un indicador para un astronauta — insumo directo del detector.
+
+    Ordena por `day_relative_to_launch` cuando existe, y solo cae a `recorded_at`
+    si no hay día. Importante: en varias fuentes NASA `recorded_at` es texto
+    (p.ej. '+45d_relative_to_launch'), así que ordenar por ese campo daría un
+    orden alfabético, no cronológico, y el "valor actual" saldría equivocado.
+    """
     with session() as conn:
-        q = """SELECT o.recorded_at, o.day_relative_to_launch, o.value_numeric, o.data_origin, mp.phase_type
+        q = """SELECT o.recorded_at, o.day_relative_to_launch, o.value_numeric, o.unit,
+                      o.data_origin, mp.phase_type
                FROM observation o
                JOIN indicator i ON i.indicator_id = o.indicator_id
                LEFT JOIN mission_phase mp ON mp.mission_phase_id = o.mission_phase_id
                WHERE o.astronaut_id = ? AND i.code = ? AND o.value_numeric IS NOT NULL
-               ORDER BY o.recorded_at"""
+               ORDER BY (o.day_relative_to_launch IS NULL),
+                        o.day_relative_to_launch,
+                        o.recorded_at"""
         return rows_to_list(conn.execute(q, (astronaut_id, indicator_code)).fetchall())

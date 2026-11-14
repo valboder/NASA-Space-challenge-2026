@@ -41,8 +41,12 @@ class ObservationCreateRequest(BaseModel):
 
 class EmergencyEvaluateRequest(BaseModel):
     astronaut_id: int
-    context_destination: Literal["LEO", "LUNAR_SURFACE", "MARS_TRANSIT", "MARS_SURFACE", "DEEP_SPACE"]
-    hazard_code: Optional[Literal["DISTANCE", "ISOLATION", "GRAVITY"]] = None
+    # Opcional: sirve para elegir el rango de referencia según destino cuando
+    # exista uno específico. Sin él se usan los rangos sin contexto.
+    context_destination: Optional[
+        Literal["LEO", "LUNAR_SURFACE", "MARS_TRANSIT", "MARS_SURFACE", "DEEP_SPACE"]] = None
+    hazard_code: Optional[Literal["DISTANCE", "ISOLATION", "GRAVITY",
+                                   "RADIATION", "ENCLOSED_ENV"]] = None
 
 
 class AstronautCreateRequest(BaseModel):

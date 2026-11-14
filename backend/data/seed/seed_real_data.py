@@ -259,9 +259,58 @@ def load_mmash():
     print(f"[MMASH] {n} observaciones REAL cargadas de {len(users[:8])} sujetos análogos.")
 
 
+#: Rangos de referencia clínicos que vienen DENTRO del propio CSV de NASA OSDR
+#: (columnas range_min / range_max por indicador). No los inventamos: son del dataset.
+CMP_RANGE_MAP = {
+    "SERUM_ALBUMIN": ("albumin_range_min_gram_per_deciliter", "albumin_range_max_gram_per_deciliter"),
+    "SERUM_CALCIUM": ("calcium_range_min_milligram_per_deciliter", "calcium_range_max_milligram_per_deciliter"),
+    "SERUM_CREATININE": ("creatinine_range_min_milligram_per_deciliter", "creatinine_range_max_milligram_per_deciliter"),
+    "SERUM_GLUCOSE": ("glucose_range_min_milligram_per_deciliter", "glucose_range_max_milligram_per_deciliter"),
+}
+
+
+def load_reference_ranges():
+    """Carga los rangos de referencia del CMP a indicator_range.
+
+    Varios indicadores traen más de un rango en el dataset (p.ej. creatinina
+    0.5-1.05 y 0.6-1.35, que corresponden a referencias distintas por sexo).
+    Tomamos el rango MÁS AMPLIO a propósito: un valor fuera incluso del rango
+    más permisivo es inequívocamente anormal, así que esta señal queda
+    específica (pocas falsas alarmas). La sensibilidad la aporta la línea base
+    personal, no este chequeo. Ver docs/VALIDACION.md.
+    """
+    citations = {c["title"]: c["citation_id"] for c in catalog.list_citations()}
+    cit_id = next((v for k, v in citations.items() if "Comprehensive Metabolic Panel" in k), None)
+
+    mins: dict[str, list[float]] = {}
+    maxs: dict[str, list[float]] = {}
+    with open(CMP_CSV, newline="", encoding="utf-8-sig") as f:
+        for row in csv.DictReader(f):
+            for code, (min_col, max_col) in CMP_RANGE_MAP.items():
+                for col, bucket in ((min_col, mins), (max_col, maxs)):
+                    raw = row.get(col)
+                    if raw and raw.strip().upper() not in ("", "NA", "N/A"):
+                        try:
+                            bucket.setdefault(code, []).append(float(raw))
+                        except ValueError:
+                            pass
+
+    n = 0
+    for code in CMP_RANGE_MAP:
+        if code in mins and code in maxs:
+            catalog.add_indicator_range(
+                indicator_code=code, context_destination=None, sex="ALL",
+                min_value=min(mins[code]), max_value=max(maxs[code]), citation_id=cit_id,
+            )
+            n += 1
+            print(f"       {code}: rango de referencia {min(mins[code])} - {max(maxs[code])}")
+    print(f"[Rangos NASA OSDR] {n} rangos de referencia cargados (el más amplio por indicador).")
+
+
 def run():
     init_db(reset=False)
     load_cmp()
+    load_reference_ranges()
     load_habitat_emergency()
     load_mmash()
     print("Datos reales/simulados cargados correctamente.")
