@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+backend/data/guardian.db
+backend/data/models/*.joblib
+.DS_Store
+*.log

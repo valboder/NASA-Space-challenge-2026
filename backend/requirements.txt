@@ -1,0 +1,14 @@
+Flask>=3.1
+pydantic>=2.0
+scikit-learn>=1.9
+numpy>=2.0
+pandas>=3.0
+joblib>=1.6
+
+# Nota: SQLite se usa vía el módulo estándar `sqlite3` (no se requiere paquete).
+# FastAPI + SQLAlchemy fueron la propuesta inicial, pero este entorno de
+# desarrollo no tiene acceso a internet para pip install, así que se usó
+# Flask (ya instalado) + sqlite3 crudo, con el mismo patrón MVC. Si el equipo
+# quiere migrar a FastAPI/SQLAlchemy donde sí haya internet, el esquema en
+# app/models/schema.sql y los DAOs en app/models/*.py son el punto de partida
+# (las firmas de función ya están pensadas para ser 1:1 con un futuro ORM).
