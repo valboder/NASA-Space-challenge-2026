@@ -30,6 +30,9 @@ concreta: *resolverlo solo, avisar a la tripulación o contactar a la Tierra*.
 - ✅ **Interlock de software**: la nave pasa a RESTRICTED/LOCKED y bloquea actividades según la salud
 - ✅ **Botón de emergencia + voz** (modo activo): reporte por voz → guía con pasos y mediciones
 - ✅ **Guía de medición** (cómo medir / por qué importa) — requisito explícito del brief del reto
+- ✅ **Adaptación por entorno** (LEO / Luna / tránsito a Marte / superficie de Marte / espacio
+  profundo): el retraso de comunicación con la Tierra y la instrucción de sujeción en
+  microgravedad cambian el mensaje y los pasos de la guía, no solo los rangos de referencia
 - ✅ **Recordatorios** de medición por tripulante
 - ✅ Detección por **línea base personal** + rangos de referencia NASA + tendencia intra-sujeto
 - ✅ Motor de protocolos de emergencia (semáforo → acción concreta) con auditoría de acceso
@@ -51,6 +54,15 @@ perfil, y responde con: urgencia, pasos inmediatos, **qué medir (con cómo y po
 (resolver solo / avisar a la tripulación / contactar a la Tierra). Cubre el escenario del video:
 *"un compañero tiene dolor en el pecho y colapsa"* → contactar a la Tierra, con pasos de evaluación
 del tripulante inconsciente.
+
+**Adaptado por entorno.** El mismo reporte cambia de guía según el `context_destination`: en LEO
+"contactar a la Tierra" implica ayuda casi en vivo (segundos de retraso); en tránsito a Marte o
+espacio profundo, el mensaje aclara explícitamente que no hay que esperar respuesta (hasta ~20 min
+por tramo) y que se debe actuar ya con el protocolo. En microgravedad (LEO, tránsito, espacio
+profundo) el paso "recuéstala de lado" se sustituye por una instrucción de sujeción, porque en
+gravedad cero una persona no se queda recostada. Ver `docs/VALIDACION.md` sección 7 para el detalle
+y los límites honestos de esta adaptación (es operativa, no un protocolo médico distinto por
+hábitat).
 
 > **Voz:** la transcripción usa **faster-whisper** (offline, encaja con 'dentro de la nave'). Si no
 > está instalado, el sistema degrada a texto sin caerse. Instalación: `pip install faster-whisper`.
@@ -165,7 +177,8 @@ tripulante, pero no es la vía por defecto. Todo medido y reproducible en **`doc
 cd backend
 pip install -r requirements.txt       # Flask, pydantic, scikit-learn, pandas, numpy, joblib
 python -m data.seed.seed_all          # siembra toda la BD en orden (NASA + demo + guías)
-python -m tests.test_personal_baseline  # verifica el detector
+python -m tests.test_personal_baseline     # verifica el detector
+python -m tests.test_assistant_environment # verifica la adaptación por entorno
 python run.py                         # http://localhost:8000
 ```
 

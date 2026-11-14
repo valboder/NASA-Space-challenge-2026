@@ -27,6 +27,105 @@ from app.services.voice_service import parse_transcript
 from app.services.emergency_service import evaluate_astronaut_hazard
 from app.ml.personal_baseline import evaluate_indicator
 
+# ---------------------------------------------------------------------------
+# Adaptación por entorno (lo que pide explícitamente el video del brief:
+# "adapt to different environments — spacecraft, space station, lunar
+# surface base"). No inventamos fisiología nueva por entorno: lo que SÍ
+# cambia de forma verificable entre entornos y afecta la respuesta de
+# emergencia es (a) el retraso de comunicación con la Tierra, que decide si
+# "contactar a la Tierra" significa pedir ayuda en vivo o actuar solo con el
+# protocolo mientras se envía el aviso, y (b) el nivel de gravedad, que
+# cambia cómo se puede acomodar o reanimar a una persona (en microgravedad
+# no se la puede "recostar": hay que sujetarla). Esto queda documentado aquí
+# mismo para que sea auditable, igual que el resto del sistema.
+# ---------------------------------------------------------------------------
+ENVIRONMENT_PROFILES: dict[str, dict] = {
+    "LEO": {
+        "label": "Órbita baja terrestre",
+        "gravity": "microgravedad",
+        "comm_delay": "near_real_time",
+        "comm_note": "El retraso con el control de misión es de segundos. "
+                      "Contactar a la Tierra significa pedir ayuda en vivo, casi de inmediato.",
+        "restrain_note": "En microgravedad no se puede recostar a una persona: hay que "
+                          "SUJETARLA contra una superficie o restricción (correa, pared) "
+                          "para que no quede flotando, antes de evaluarla o hacer RCP.",
+    },
+    "LUNAR_SURFACE": {
+        "label": "Base en superficie lunar",
+        "gravity": "gravedad parcial (~1/6 g)",
+        "comm_delay": "short",
+        "comm_note": "El retraso con la Tierra es de 1 a 3 segundos: alcanza para pedir "
+                      "guía en vivo, aunque con una conversación algo más lenta que en órbita.",
+        "restrain_note": "Con gravedad parcial la persona sí puede recostarse, pero los "
+                          "movimientos y objetos sueltos flotan más de lo habitual: "
+                          "verifica que quede realmente apoyada antes de dejarla.",
+        "shelter_note": "Si hay un refugio presurizado o módulo de hábitat separado, "
+                         "trasladar ahí a la persona antes de evaluarla con calma.",
+    },
+    "MARS_TRANSIT": {
+        "label": "Tránsito a Marte",
+        "gravity": "microgravedad",
+        "comm_delay": "long",
+        "comm_note": "El retraso con la Tierra puede llegar a ~20 minutos por tramo "
+                      "(40 min ida y vuelta). 'Contactar a la Tierra' aquí NO significa "
+                      "esperar instrucciones: envía el aviso y actúa de inmediato con los "
+                      "pasos de este protocolo; la respuesta de la Tierra llegará después.",
+        "restrain_note": "En microgravedad no se puede recostar a una persona: hay que "
+                          "SUJETARLA contra una superficie o restricción (correa, pared) "
+                          "para que no quede flotando, antes de evaluarla o hacer RCP.",
+    },
+    "MARS_SURFACE": {
+        "label": "Superficie de Marte",
+        "gravity": "gravedad parcial (~1/3 g)",
+        "comm_delay": "long",
+        "comm_note": "El retraso con la Tierra puede llegar a ~20 minutos por tramo. "
+                      "'Contactar a la Tierra' significa enviar el aviso ahora y seguir el "
+                      "protocolo sin esperar respuesta inmediata.",
+        "restrain_note": "Con gravedad parcial la persona puede recostarse de lado con "
+                          "normalidad; de todas formas verifica que quede estable.",
+        "shelter_note": "Si hay un hábitat o refugio presurizado cercano, traslada ahí a "
+                         "la persona antes de continuar la evaluación.",
+    },
+    "DEEP_SPACE": {
+        "label": "Espacio profundo / tránsito largo",
+        "gravity": "microgravedad",
+        "comm_delay": "very_long",
+        "comm_note": "El retraso con la Tierra puede superar los 20 minutos o depender de "
+                      "un relevo. Trata cada emergencia como si no hubiera ayuda externa "
+                      "disponible a tiempo: envía el aviso, pero actúa ya con el protocolo.",
+        "restrain_note": "En microgravedad no se puede recostar a una persona: hay que "
+                          "SUJETARLA contra una superficie o restricción (correa, pared) "
+                          "para que no quede flotando, antes de evaluarla o hacer RCP.",
+    },
+}
+
+MICROGRAVITY_DESTINATIONS = {"LEO", "MARS_TRANSIT", "DEEP_SPACE"}
+
+
+def _adapt_step_text(step: str, destination: str | None) -> str:
+    """Reescribe un paso puntual cuando el entorno cambia cómo se ejecuta.
+
+    Por ahora el único caso con texto distinto es "recuéstala de lado", que no
+    tiene sentido en microgravedad. El resto de los pasos (medir, avisar,
+    hidratarse) no cambian por entorno, así que se dejan igual.
+    """
+    if destination in MICROGRAVITY_DESTINATIONS and "recuéstala de lado" in step:
+        return ENVIRONMENT_PROFILES[destination]["restrain_note"]
+    return step
+
+
+def environment_context(destination: str | None) -> dict:
+    """Resumen del entorno para mostrar junto con la guía de emergencia."""
+    perfil = ENVIRONMENT_PROFILES.get(destination or "LEO", ENVIRONMENT_PROFILES["LEO"])
+    return {
+        "destination": destination or "LEO (asumido, no especificado)",
+        "label": perfil["label"],
+        "gravity": perfil["gravity"],
+        "comm_delay": perfil["comm_delay"],
+        "comm_note": perfil["comm_note"],
+        "shelter_note": perfil.get("shelter_note"),
+    }
+
 # Léxico de síntomas → hazard implicado, urgencia, qué medir y pasos inmediatos.
 # Es el conocimiento clínico codificado, no generado. Ampliable por fila.
 SYMPTOM_LEXICON: list[dict] = [
@@ -153,7 +252,7 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
     urgencia_max = "BAJA"
     orden_urgencia = {"BAJA": 0, "MEDIA": 1, "ALTA": 2}
     for s in sintomas:
-        pasos.extend(s["steps"])
+        pasos.extend(_adapt_step_text(p, context_destination) for p in s["steps"])
         if orden_urgencia[s["urgency"]] > orden_urgencia[urgencia_max]:
             urgencia_max = s["urgency"]
         for code in _stale_or_missing(astronaut_id, s["measure"]):
@@ -186,11 +285,15 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
     pasos_unicos = list(dict.fromkeys(pasos))
     medir_unicos = list({m["indicator_code"]: m for m in medir}.values())
 
+    entorno = environment_context(context_destination)
+
     if not sintomas and not valores:
         mensaje = ("No identifiqué síntomas ni valores en tu reporte. ¿Puedes decir qué sientes "
                    "o qué medición tienes? Por ejemplo: 'me falta el aire' o 'mi pulso está en 120'.")
     else:
         mensaje = f"Entendido. Urgencia estimada: {urgencia_max}."
+        if accion == "CONTACT_EARTH":
+            mensaje += " " + entorno["comm_note"]
 
     es_model.update_session(session_id, status="GUIDANCE_GIVEN",
                             summary=f"Síntomas: {[','.join(p for e in sintomas for p in e['patterns'][:1])]}; "
@@ -211,4 +314,5 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
         "measurements_to_take": medir_unicos,
         "recommended_action": accion,
         "worst_passive_level": nivel_peor,
+        "environment": entorno,
     }

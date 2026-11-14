@@ -7,10 +7,9 @@ y para que nadie tenga que confiar en nuestra palabra.
 Reproducir todo:
 ```bash
 cd backend
-python -m data.seed.seed_catalog
-python -m data.seed.seed_real_data
-python -m data.seed.seed_nasa_analog
+python -m data.seed.seed_all
 python -m tests.test_personal_baseline
+python -m tests.test_assistant_environment
 ```
 
 ---
@@ -189,6 +188,38 @@ Además, una desviación que **sigue dentro** del rango clínico normal no puede
 escalar a rojo: "se movió respecto de sí mismo pero sigue sano" es un aviso, no
 una emergencia.
 
+**c) Pendiente real pero clínicamente irrelevante (falso positivo de tendencia).**
+Al construir la demo de episodios de emergencia (`seed_emergency_episodes.py`)
+apareció un tercer caso, más sutil que los dos anteriores. Un tripulante
+"control" (MARS-03, calcio estable entre 9.7 y 9.9 mg/dL) salía en **WARN**
+en vez de GREEN. La causa: con 12 puntos repartidos en muchos días, una
+pendiente diminuta (~0.001 mg/dL/día) multiplicada por un periodo largo supera
+el piso de ruido de la señal 3 (`efecto > SNR·MAD`), aunque la pendiente en sí
+no signifique nada clínicamente.
+
+Se corrigió con **dos filtros adicionales**, cada uno independiente del
+anterior, de modo que una tendencia solo se reporta si pasa los tres:
+
+- **Monotonía real — tau de Kendall.** `_kendall_tau()` mide si la relación
+  entre día y valor es realmente consistente (cerca de +1 o −1) o es apenas
+  ruido con un sesgo casual (cerca de 0). Medido en este caso: tau = 0.16,
+  muy por debajo del umbral `TREND_TAU_MIN = 0.20` que sí cumplen las
+  tendencias reales de sueño de la sección 3 (tau ≥ 0.57 en todos los casos
+  que el detector marcó).
+- **Significancia clínica — fracción del rango de referencia.** Incluso con
+  monotonía real, el efecto acumulado debe ser al menos `TREND_CLINICAL_FRAC
+  = 0.25` (25 %) del ancho del rango de referencia publicado para contar como
+  "material". El caso MARS-03: efecto acumulado 0.2 mg/dL contra un rango de
+  referencia de 1.8 mg/dL de ancho (8.6–10.4) → 11 %, por debajo del 25 %. No
+  se reporta como tendencia.
+
+Tras agregar ambos filtros, se repitió la validación de la sección 3 (9/9
+contra Spearman) para confirmar que **no se perdió ninguna detección real**:
+sigue en 9/9. Los tres filtros —ruido, monotonía, significancia clínica— son
+condiciones AND independientes; basta que una falle para que la tendencia no
+se reporte, y las tres están implementadas en `evaluate_indicator()` de
+`app/ml/personal_baseline.py`.
+
 ---
 
 ## 6. Calibración elegida
@@ -205,7 +236,69 @@ del rango clínico evita rojos por cambios irrelevantes.
 
 ---
 
-## 7. Datos excluidos a propósito
+## 7. Los dos modos: pasivo y activo
+
+El brief del reto (video de presentación, Rodrigo Leonardi) pide explícitamente
+que la herramienta no asuma que el astronauta es médico: debe explicar cómo
+medir, por qué importa, qué hacer ante un valor anormal, y adaptarse a
+distintos entornos. Esto se tradujo en dos modos, documentados aquí porque
+ninguno usa un modelo generativo ni inventa indicaciones médicas:
+
+**Modo pasivo** (`monitoring_service.ingest_reading` → `emergency_service` →
+`interlock_service`): cada lectura nueva reevalúa los hazards activos del
+tripulante con el detector de la sección 4; si el peor nivel llega a RED, el
+estado de la nave pasa de NORMAL a RESTRICTED/LOCKED (`ship_state_event`,
+tabla append-only) y las actividades cuyo `min_allowed_state` lo exige quedan
+bloqueadas (`ship.activities_with_status`), hasta que el estado vuelve a
+normalizarse solo. Esto es **software puro** — una máquina de estados que
+decide qué mostrar/permitir en la interfaz — y está documentado así a
+propósito: no pretende controlar hardware real de la nave.
+
+**Modo activo** (`assistant_service.handle_emergency`, vía
+`button_controller`): el astronauta presiona el botón y reporta por voz
+(transcrito offline con faster-whisper si está disponible, con reintento en
+texto si no) o por texto directamente. El sistema combina tres fuentes —el
+léxico de síntomas (`SYMPTOM_LEXICON`, reglas por palabra clave, no un LLM),
+el contexto pasivo ya calculado, y las mediciones que faltan— y devuelve
+pasos inmediatos, qué medir (con `how_to_measure` / `why_it_matters` tomados
+del catálogo) y una acción (`SELF_RESOLVE` / `NOTIFY_CREW` / `CONTACT_EARTH`).
+La acción final es siempre la **más severa** entre lo que ya detectó el modo
+pasivo y el piso mínimo de cada síntoma reportado (`min_action`), para que un
+síntoma grave nunca quede sin respuesta aunque el sistema pasivo no lo haya
+visto todavía, y viceversa.
+
+### Adaptación por entorno
+
+El video pide adaptar la guía según el entorno (nave en tránsito, estación,
+base en superficie lunar). No inventamos fisiología distinta por entorno —
+eso sería sobre-afirmar—; lo que sí cambia de forma verificable y se
+implementó en `ENVIRONMENT_PROFILES` (`app/services/assistant_service.py`)
+es:
+
+- **Retraso de comunicación con la Tierra.** En LEO es de segundos (pedir
+  ayuda en vivo tiene sentido); en tránsito a Marte o espacio profundo puede
+  llegar a ~20 minutos por tramo. El mensaje de la acción `CONTACT_EARTH`
+  cambia en consecuencia: en Marte explícitamente dice que no hay que esperar
+  respuesta antes de actuar.
+- **Nivel de gravedad.** En microgravedad (LEO, tránsito, espacio profundo)
+  el paso "recuéstala de lado" no tiene sentido físico — la persona flota —
+  y se sustituye por una instrucción de sujeción/restricción. En gravedad
+  parcial (Luna, Marte superficie) el paso original se mantiene.
+
+Verificado con una prueba dedicada
+(`tests/test_assistant_environment.py`): el mismo reporte de voz ("se
+desmayó, no responde") produce pasos y mensaje distintos en `MARS_TRANSIT`
+que en `LUNAR_SURFACE`, y el caso sin destino especificado cae explícitamente
+a LEO en vez de fallar o adivinar.
+
+Esto sigue siendo superficial frente a lo que un sistema de producción real
+necesitaría (protocolos médicos específicos por hábitat, recursos distintos
+instalados en cada tipo de base); está marcado como el principal punto de
+expansión futura en el `README.md`.
+
+---
+
+## 8. Datos excluidos a propósito
 
 | Dataset | Motivo |
 |---|---|
@@ -214,7 +307,7 @@ del rango clínico evita rojos por cambios irrelevantes.
 
 ---
 
-## 8. Qué NO afirma este sistema
+## 9. Qué NO afirma este sistema
 
 Para que nadie lo sobrevenda:
 
@@ -230,6 +323,17 @@ Para que nadie lo sobrevenda:
 - **SpO2, temperatura y pulso no tienen fuente real** en los datos disponibles.
 - **Los sujetos no son astronautas en vuelo**, excepto los del DSO 484, que está
   excluido del modelo. Los estudios de reposo son análogos terrestres.
+- **La adaptación por entorno es operativa, no médica.** Lo que cambia entre
+  LEO, órbita lunar, tránsito a Marte y superficie es el retraso de
+  comunicación con la Tierra y la instrucción de sujeción en microgravedad —
+  no hay protocolos clínicos distintos por entorno todavía; eso requeriría
+  guías médicas específicas por hábitat que no están en el alcance de esta
+  entrega.
+- **El léxico de síntomas (modo activo) es un conjunto de reglas por palabra
+  clave, no comprensión de lenguaje natural.** Reconoce patrones de texto en
+  español explícitamente escritos; una forma de decir lo mismo que no esté en
+  el patrón puede no detectarse, y por eso el modo activo siempre se combina
+  con el contexto pasivo en vez de depender solo de lo que el astronauta dice.
 
 El IsolationForest de `app/ml/anomaly_detector.py` se conserva para el caso
 multivariado y como vía de expansión cuando exista telemetría real por
