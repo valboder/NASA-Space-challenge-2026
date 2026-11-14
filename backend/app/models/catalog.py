@@ -90,6 +90,23 @@ def upsert_indicator(
         return row["indicator_id"]
 
 
+def set_measurement_guide(indicator_code: str, how_to_measure: str, why_it_matters: str,
+                          typical_recheck_days: int | None = None) -> None:
+    """Guarda la guía 'cómo medir / por qué importa' que pide el brief del reto."""
+    with session() as conn:
+        conn.execute(
+            """UPDATE indicator SET how_to_measure=?, why_it_matters=?, typical_recheck_days=?
+               WHERE code=?""",
+            (how_to_measure, why_it_matters, typical_recheck_days, indicator_code),
+        )
+
+
+def get_indicator(indicator_code: str) -> dict | None:
+    with session() as conn:
+        return row_to_dict(conn.execute(
+            "SELECT * FROM indicator WHERE code=?", (indicator_code,)).fetchone())
+
+
 def get_indicator_id(code: str) -> int | None:
     with session() as conn:
         row = conn.execute("SELECT indicator_id FROM indicator WHERE code=?", (code,)).fetchone()

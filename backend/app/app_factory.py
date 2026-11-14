@@ -11,6 +11,8 @@ from app.controllers import (
     observation_controller,
     voice_controller,
     emergency_controller,
+    button_controller,
+    ship_controller,
 )
 
 
@@ -26,6 +28,8 @@ def create_app() -> Flask:
     app.register_blueprint(observation_controller.bp)
     app.register_blueprint(voice_controller.bp)
     app.register_blueprint(emergency_controller.bp)
+    app.register_blueprint(button_controller.bp)
+    app.register_blueprint(ship_controller.bp)
 
     @app.errorhandler(404)
     def not_found(e):

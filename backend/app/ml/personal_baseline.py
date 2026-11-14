@@ -40,10 +40,17 @@ BASELINE_N_ADEQUATE = 5
 Z_WARN = 2.5
 Z_ALERT = 3.5
 
-# Una tendencia se reporta solo si su efecto proyectado supera el ruido propio
-# de la serie (slope * días > TREND_SNR * MAD). Evita alarmar por deriva de sensor.
+# Una tendencia se reporta solo si cumple TRES condiciones independientes:
+#   (a) su efecto acumulado supera el ruido propio de la serie (efecto > SNR*MAD)
+#   (b) la relación es monótona de verdad (|Kendall tau| >= TREND_TAU_MIN)
+#   (c) es clínicamente significativa: si hay rango de referencia, el efecto debe
+#       ser una fracción apreciable de su ancho. Una tendencia monótona que apenas
+#       se mueve dentro de la banda normal (medido: calcio subiendo 0.2 mg/dL sobre
+#       un rango de 1.8) es real pero no accionable.
 TREND_MIN_POINTS = 10
 TREND_SNR = 2.0
+TREND_TAU_MIN = 0.20
+TREND_CLINICAL_FRAC = 0.25
 
 
 @dataclass
@@ -119,6 +126,28 @@ def _theil_sen_slope(points: list[tuple[float, float]]) -> float | None:
             if dx != 0:
                 slopes.append((points[j][1] - points[i][1]) / dx)
     return statistics.median(slopes) if slopes else None
+
+
+def _kendall_tau(points: list[tuple[float, float]]) -> float:
+    """Tau de Kendall: concordancia entre tiempo y valor, en [-1, 1].
+
+    Mide si la relación es monótona, independiente de la magnitud de la pendiente.
+    Es el complemento necesario de Theil-Sen: en una serie casi plana, el span
+    largo puede inflar el 'efecto' de una pendiente diminuta por encima del ruido,
+    pero su tau queda cerca de 0 (medido: una serie control dio ratio=1.5 pero
+    tau=0.16). Distribución-libre, sin dependencias.
+    """
+    n = len(points)
+    c = d = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            s = (points[j][0] - points[i][0]) * (points[j][1] - points[i][1])
+            if s > 0:
+                c += 1
+            elif s < 0:
+                d += 1
+    total = c + d
+    return (c - d) / total if total else 0.0
 
 
 def evaluate_indicator(astronaut_id: int, indicator_code: str,
@@ -207,7 +236,14 @@ def evaluate_indicator(astronaut_id: int, indicator_code: str,
         mad_serie = statistics.median([abs(x - med_serie) for x in serie]) or 1e-9
         span_dias = max(p[0] for p in trend_points) - min(p[0] for p in trend_points)
         efecto = abs(slope) * span_dias
-        trend_material = efecto > TREND_SNR * mad_serie
+        tau = _kendall_tau(trend_points)
+        cond_ruido = efecto > TREND_SNR * mad_serie
+        cond_monotonia = abs(tau) >= TREND_TAU_MIN
+        if ref_min is not None and ref_max is not None and ref_max > ref_min:
+            cond_clinica = efecto >= TREND_CLINICAL_FRAC * (ref_max - ref_min)
+        else:
+            cond_clinica = True
+        trend_material = cond_ruido and cond_monotonia and cond_clinica
         if trend_material:
             direccion = "baja" if slope < 0 else "sube"
             hallazgos.append(("WARN",

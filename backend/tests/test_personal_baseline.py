@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sys
 
-from app.ml.personal_baseline import _robust_z, _theil_sen_slope, _scale_floor
+from app.ml.personal_baseline import _robust_z, _theil_sen_slope, _scale_floor, _kendall_tau
 
 ALBUMIN_REF = (3.6, 5.1)          # rango de referencia real de NASA OSDR LSDS-8
 fallos: list[str] = []
@@ -83,6 +83,18 @@ def test_ignora_serie_plana_con_ruido():
           f"slope={slope}")
 
 
+def test_tau_distingue_tendencia_de_ruido():
+    """Kendall tau: alto en serie monótona, cerca de 0 en serie casi plana.
+    Esta es la condición que descarta la pendiente espuria del span largo."""
+    monotona = [(float(d), 92.0 - 0.14 * d) for d in range(60)]
+    casi_plana = [(float(i * 30), v) for i, v in enumerate(
+        [9.7, 9.72, 9.68, 9.75, 9.71, 9.69, 9.73, 9.7, 9.74, 9.71])]
+    tau_m = _kendall_tau(monotona)
+    tau_p = _kendall_tau(casi_plana)
+    check("tau alto en tendencia real", abs(tau_m) >= 0.9, f"tau={tau_m}")
+    check("tau bajo en serie casi plana", abs(tau_p) < 0.2, f"tau={tau_p}")
+
+
 def test_se_niega_sin_datos_suficientes():
     """Con menos de 2 puntos no se puede estimar dispersión: debe devolver None,
     no un número inventado."""
@@ -104,6 +116,7 @@ if __name__ == "__main__":
     for fn in (test_detecta_valor_anormal, test_no_alarma_por_variacion_normal,
                test_piso_de_escala_con_varianza_cero, test_piso_sin_rango_de_referencia,
                test_detecta_tendencia_sostenida, test_ignora_serie_plana_con_ruido,
+               test_tau_distingue_tendencia_de_ruido,
                test_se_niega_sin_datos_suficientes, test_direccion_del_z):
         print(f"{fn.__name__}:")
         fn()

@@ -26,12 +26,34 @@ concreta: *resolverlo solo, avisar a la tripulación o contactar a la Tierra*.
 - ✅ Backend en **MVC** (Model-View-Controller), API REST funcionando
 - ✅ **1840 observaciones** cargadas según el ER, con procedencia trazable
   (6 datasets NASA reales + MMASH público + escenarios simulados marcados como tales)
-- ✅ Interfaz de voz **a nivel backend** (endpoint que recibe transcript y lo convierte en datos)
+- ✅ **Análisis pasivo en tiempo real**: cada lectura reevalúa al tripulante y actualiza la nave
+- ✅ **Interlock de software**: la nave pasa a RESTRICTED/LOCKED y bloquea actividades según la salud
+- ✅ **Botón de emergencia + voz** (modo activo): reporte por voz → guía con pasos y mediciones
+- ✅ **Guía de medición** (cómo medir / por qué importa) — requisito explícito del brief del reto
+- ✅ **Recordatorios** de medición por tripulante
 - ✅ Detección por **línea base personal** + rangos de referencia NASA + tendencia intra-sujeto
 - ✅ Motor de protocolos de emergencia (semáforo → acción concreta) con auditoría de acceso
 - ✅ **Validación honesta documentada y reproducible** (`docs/VALIDACION.md`), con suite de pruebas
 - ⏳ **Frontend (HTML/UI) — pendiente a propósito.** El equipo todavía no define el stack visual;
   este repo no lo toca aún. Todo lo de arriba se consume por API REST (JSON) en cuanto se decida.
+
+## Los dos modos (como pide el brief del reto)
+
+**Pasivo (siempre activo).** El sistema analiza en tiempo real los datos del tripulante sin que
+haga nada. Si detecta una anomalía, **restringe o bloquea actividades de la nave** (interlock de
+software, auditado) hasta que el estado se normaliza — al volver el indicador a verde, la nave
+vuelve sola a NORMAL. Las actividades críticas (soporte vital, comunicación, respuesta médica)
+**nunca** se bloquean.
+
+**Activo (botón de emergencia).** El astronauta presiona el botón y reporta por voz qué siente. El
+asistente —basado en protocolos, 100% offline— combina ese reporte con el contexto pasivo y su
+perfil, y responde con: urgencia, pasos inmediatos, **qué medir (con cómo y por qué)**, y la acción
+(resolver solo / avisar a la tripulación / contactar a la Tierra). Cubre el escenario del video:
+*"un compañero tiene dolor en el pecho y colapsa"* → contactar a la Tierra, con pasos de evaluación
+del tripulante inconsciente.
+
+> **Voz:** la transcripción usa **faster-whisper** (offline, encaja con 'dentro de la nave'). Si no
+> está instalado, el sistema degrada a texto sin caerse. Instalación: `pip install faster-whisper`.
 
 ## Arquitectura (MVC)
 
@@ -142,11 +164,14 @@ tripulante, pero no es la vía por defecto. Todo medido y reproducible en **`doc
 ```bash
 cd backend
 pip install -r requirements.txt       # Flask, pydantic, scikit-learn, pandas, numpy, joblib
-python -m data.seed.seed_catalog      # catálogos (hazards, fuentes, indicadores, protocolos)
-python -m data.seed.seed_real_data    # NASA OSDR + rangos de referencia + habitat + MMASH
-python -m data.seed.seed_nasa_analog  # NASA LSDA: ANP, ACTH, sueño, ecocardiografía
-python -m tests.test_personal_baseline  # verifica el detector (11 pruebas)
+python -m data.seed.seed_all          # siembra toda la BD en orden (NASA + demo + guías)
+python -m tests.test_personal_baseline  # verifica el detector
 python run.py                         # http://localhost:8000
+```
+
+Para la voz offline (opcional, se corre en la máquina de la nave):
+```bash
+pip install faster-whisper            # transcripción local; sin esto, el botón usa texto
 ```
 
 Endpoints principales:
@@ -164,6 +189,13 @@ Endpoints principales:
 | `GET /api/emergency/crew` | Panel de toda la tripulación |
 | `GET /api/emergency/alerts` | Alertas registradas |
 | `GET /api/emergency/protocols` | Árbol de protocolos de emergencia |
+| `POST /api/emergency/button` | **Botón de emergencia**: voz (audio) o texto → guía |
+| `GET /api/emergency/voice/status` | Si faster-whisper está disponible |
+| `GET /api/emergency/sessions` | Sesiones de emergencia (botón o auto-disparo) |
+| `GET /api/ship/<mission_id>/status` | **Estado de la nave** + actividades permitidas/bloqueadas |
+| `POST /api/ship/<mission_id>/recompute` | Recalcula el estado de la nave |
+| `POST /api/monitoring/reading` | **Análisis pasivo**: ingresa una lectura y devuelve su efecto |
+| `GET /api/reminders` | Mediciones pendientes por tripulante o tripulación |
 
 ## Uso de IA (Claude) en este proyecto
 

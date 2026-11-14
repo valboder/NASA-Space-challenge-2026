@@ -74,6 +74,13 @@ def list_astronauts(mission_id: int | None = None) -> list[dict]:
         return rows_to_list(conn.execute("SELECT * FROM astronaut ORDER BY astronaut_id").fetchall())
 
 
+def mission_id_of_astronaut(astronaut_id: int) -> int | None:
+    with session() as conn:
+        row = conn.execute("SELECT mission_id FROM astronaut WHERE astronaut_id=?",
+                           (astronaut_id,)).fetchone()
+        return row["mission_id"] if row else None
+
+
 def create_habitat(mission_id: int, name: str, habitat_type: str | None = None) -> int:
     with session() as conn:
         cur = conn.execute(

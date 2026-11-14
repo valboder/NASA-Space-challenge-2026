@@ -5,6 +5,10 @@ numpy>=2.0
 pandas>=3.0
 joblib>=1.6
 
+# Opcional: transcripción de voz offline para el botón de emergencia.
+# Si no está, el botón degrada a texto sin romperse (ver app/services/transcription.py).
+# faster-whisper>=1.0
+
 # Nota: SQLite se usa vía el módulo estándar `sqlite3` (no se requiere paquete).
 # FastAPI + SQLAlchemy fueron la propuesta inicial, pero este entorno de
 # desarrollo no tiene acceso a internet para pip install, así que se usó

@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS indicator (
     requires_equipment     INTEGER NOT NULL DEFAULT 0 CHECK (requires_equipment IN (0,1)),
     default_method         TEXT,                               -- 'oxímetro de pulso', 'análisis de orina 24h', ...
     measurement_caveat      TEXT,                               -- advertencia de validez (ver ER_MODEL.md punto 6)
+    -- El brief del reto lo pide explícitamente ("los astronautas no son médicos:
+    -- explica cómo tomar cada medición y por qué importa"):
+    how_to_measure           TEXT,                              -- pasos para tomar la medición sin ser médico
+    why_it_matters            TEXT,                              -- por qué este indicador importa en el espacio
+    typical_recheck_days       INTEGER,                          -- cada cuántos días remedir (para recordatorios)
     hazard_id               INTEGER REFERENCES hazard(hazard_id) ON DELETE SET NULL,
     default_source_id       INTEGER REFERENCES data_source(data_source_id) ON DELETE SET NULL
 );
@@ -210,3 +215,51 @@ CREATE TABLE IF NOT EXISTS data_access_log (
     purpose                           TEXT,
     occurred_at                        TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ───────────────────────────── Estado operacional de la nave (interlock) ─────────────────────────────
+-- IMPORTANTE: esto es un interlock de SOFTWARE, no control de hardware real.
+-- GUARDIÁN fija un estado que la interfaz respeta y que queda auditado; no apaga
+-- motores ni sella escotillas. Tabla append-only: el estado actual es el evento
+-- más reciente por misión (NORMAL si no hay ninguno).
+
+CREATE TABLE IF NOT EXISTS ship_state_event (
+    ship_state_event_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id                   INTEGER NOT NULL REFERENCES mission(mission_id) ON DELETE CASCADE,
+    state                         TEXT NOT NULL CHECK (state IN ('NORMAL','RESTRICTED','LOCKED')),
+    previous_state                 TEXT CHECK (previous_state IN ('NORMAL','RESTRICTED','LOCKED', NULL)),
+    reason                          TEXT,
+    driven_by_astronaut_id           INTEGER REFERENCES astronaut(astronaut_id) ON DELETE SET NULL,
+    driven_by_hazard                  TEXT,
+    created_at                         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ship_state_mission ON ship_state_event(mission_id, created_at);
+
+-- Actividades de la nave y qué estado mínimo las permite. Cuando la nave está
+-- RESTRICTED o LOCKED, las actividades con required_state más permisivo quedan
+-- bloqueadas. Es una tabla de catálogo: agregar una actividad es un INSERT.
+CREATE TABLE IF NOT EXISTS ship_activity (
+    ship_activity_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    code                          TEXT NOT NULL UNIQUE,
+    name                           TEXT NOT NULL,
+    category                        TEXT,
+    min_allowed_state                TEXT NOT NULL CHECK (min_allowed_state IN ('NORMAL','RESTRICTED','LOCKED')),
+    rationale                         TEXT
+);
+
+-- ───────────────────────────── Sesión de emergencia (botón + voz activa) ─────────────────────────────
+
+CREATE TABLE IF NOT EXISTS emergency_session (
+    emergency_session_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    astronaut_id                  INTEGER NOT NULL REFERENCES astronaut(astronaut_id) ON DELETE CASCADE,
+    mission_id                     INTEGER NOT NULL REFERENCES mission(mission_id) ON DELETE CASCADE,
+    trigger                         TEXT NOT NULL CHECK (trigger IN ('PANIC_BUTTON','PASSIVE_AUTO')),
+    status                           TEXT NOT NULL DEFAULT 'OPEN'
+                                      CHECK (status IN ('OPEN','GUIDANCE_GIVEN','RESOLVED','ESCALATED')),
+    opened_at                         TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at                          TEXT,
+    voice_log_id                        INTEGER REFERENCES voice_log(voice_log_id) ON DELETE SET NULL,
+    summary                              TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_emergency_session_astro ON emergency_session(astronaut_id, opened_at);
