@@ -24,6 +24,23 @@ def create_app() -> Flask:
     from app.core.idempotency import register_idempotency
     register_idempotency(app)
 
+    # CORS manual (sin flask-cors, para no depender de un paquete que este
+    # entorno de desarrollo no puede instalar por falta de internet). El
+    # frontend (GUARDIAN_frontend.html) se abre como archivo local o se sirve
+    # desde otro puerto, así que sin esto el navegador bloquea el fetch() al
+    # backend. Solo para la demo: en producción esto se restringiría a un
+    # origen conocido en vez de "*".
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
+
+    @app.route("/api/<path:_any>", methods=["OPTIONS"])
+    def cors_preflight(_any):
+        return ("", 204)
+
     @app.get("/api/health")
     def health():
         return jsonify({"status": "ok", "service": "GUARDIAN backend"})

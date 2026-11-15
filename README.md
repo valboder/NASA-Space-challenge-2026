@@ -37,8 +37,11 @@ concreta: *resolverlo solo, avisar a la tripulación o contactar a la Tierra*.
 - ✅ Detección por **línea base personal** + rangos de referencia NASA + tendencia intra-sujeto
 - ✅ Motor de protocolos de emergencia (semáforo → acción concreta) con auditoría de acceso
 - ✅ **Validación honesta documentada y reproducible** (`docs/VALIDACION.md`), con suite de pruebas
-- ⏳ **Frontend (HTML/UI) — pendiente a propósito.** El equipo todavía no define el stack visual;
-  este repo no lo toca aún. Todo lo de arriba se consume por API REST (JSON) en cuanto se decida.
+- ✅ **Frontend** (`frontend/GUARDIAN_frontend.html`): tableta de estación en HTML/CSS/JS puro
+  (sin frameworks ni dependencias), con visor 3D anatómico en WebGL propio (sin librerías,
+  malla real horneada en el propio archivo). Habla con el backend por `fetch()` a
+  `http://localhost:8000/api` (CORS ya habilitado en `app_factory.py`); si el backend no está
+  corriendo, la demo sigue funcionando en modo local/offline.
 
 ## Los dos modos (como pide el brief del reto)
 
@@ -200,6 +203,14 @@ Para la voz offline (opcional, se corre en la máquina de la nave):
 ```bash
 pip install faster-whisper            # transcripción local; sin esto, el botón usa texto
 ```
+
+Para el frontend (tableta de estación), en otra terminal, con el backend ya corriendo:
+```bash
+cd frontend
+python3 -m http.server 5501          # http://localhost:5501/GUARDIAN_frontend.html
+```
+También se puede abrir `frontend/GUARDIAN_frontend.html` directamente con doble clic (es un
+único archivo autocontenido); seguirá buscando el backend en `http://localhost:8000/api`.
 
 Endpoints principales:
 
