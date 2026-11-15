@@ -249,8 +249,9 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
     # 4. Construir la guía: pasos + qué medir + acción
     pasos: list[str] = []
     medir: list[dict] = []
-    urgencia_max = "BAJA"
-    orden_urgencia = {"BAJA": 0, "MEDIA": 1, "ALTA": 2}
+    from app.services.assessment_status import assessment_summary, LEVEL_URGENCY, URGENCY_RANK
+    urgencia_max = "UNKNOWN"
+    orden_urgencia = URGENCY_RANK
     for s in sintomas:
         pasos.extend(_adapt_step_text(p, context_destination) for p in s["steps"])
         if orden_urgencia[s["urgency"]] > orden_urgencia[urgencia_max]:
@@ -272,14 +273,19 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
     #    el astronauta. Es el corazón de "combinar pasivo + activo".
     rank = {"CONTACT_EARTH": 3, "NOTIFY_CREW": 2, "SELF_RESOLVE": 1, None: 0}
     accion = None
-    nivel_peor = "GREEN"
+    assessment = assessment_summary(evaluaciones, expected_count=len(activos))
+    nivel_peor = assessment["level"]
     for e in evaluaciones:
         if rank.get(e.get("recommended_action"), 0) > rank.get(accion, 0):
             accion = e.get("recommended_action")
-            nivel_peor = e["alert_level"]
     for s in sintomas:
         if rank.get(s.get("min_action"), 0) > rank.get(accion, 0):
             accion = s["min_action"]
+
+    action_urgency = {"CONTACT_EARTH": "ALTA", "NOTIFY_CREW": "MEDIA",
+                      "SELF_RESOLVE": "BAJA"}.get(accion, "UNKNOWN")
+    urgencia_max = max((urgencia_max, LEVEL_URGENCY[nivel_peor], action_urgency),
+                       key=URGENCY_RANK.get)
 
     # deduplicar pasos preservando orden
     pasos_unicos = list(dict.fromkeys(pasos))
@@ -291,9 +297,11 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
         mensaje = ("No identifiqué síntomas ni valores en tu reporte. ¿Puedes decir qué sientes "
                    "o qué medición tienes? Por ejemplo: 'me falta el aire' o 'mi pulso está en 120'.")
     else:
-        mensaje = f"Entendido. Urgencia estimada: {urgencia_max}."
-        if accion == "CONTACT_EARTH":
-            mensaje += " " + entorno["comm_note"]
+        mensaje = ("No hay evaluación suficiente para estimar la urgencia."
+                   if urgencia_max == "UNKNOWN" else f"Entendido. Urgencia estimada: {urgencia_max}.")
+    mensaje += " " + assessment["note"]
+    if accion == "CONTACT_EARTH":
+        mensaje += " " + entorno["comm_note"]
 
     es_model.update_session(session_id, status="GUIDANCE_GIVEN",
                             summary=f"Síntomas: {[','.join(p for e in sintomas for p in e['patterns'][:1])]}; "
@@ -314,5 +322,6 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
         "measurements_to_take": medir_unicos,
         "recommended_action": accion,
         "worst_passive_level": nivel_peor,
+        "assessment": assessment,
         "environment": entorno,
     }

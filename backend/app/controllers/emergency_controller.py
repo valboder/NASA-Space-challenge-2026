@@ -87,3 +87,8 @@ def update_alert_status(alert_id):
 @bp.get("/protocols")
 def protocols():
     return jsonify(anomaly_model.list_protocols(hazard_code=request.args.get("hazard_code")))
+
+
+@bp.get("/alerts/<int:alert_id>/history")
+def alert_history(alert_id):
+    return jsonify(anomaly_model.alert_history(alert_id))

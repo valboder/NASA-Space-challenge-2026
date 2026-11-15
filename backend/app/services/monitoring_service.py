@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.services.emergency_service import evaluate_all_active_hazards
 from app.services.interlock_service import recompute_ship_state, LEVEL_RANK
+from app.services.assessment_status import assessment_summary
 
 # Un nivel que, al aparecer de forma pasiva, dispara una sesión de emergencia
 # automática (sin que el astronauta toque el botón).
@@ -63,12 +64,16 @@ def ingest_reading(astronaut_id: int, indicator_code: str, value: float,
     # 4. Sesión de emergencia automática si el nivel es crítico
     auto_session_id = None
     if peor and LEVEL_RANK.get(peor["alert_level"], 0) >= LEVEL_RANK[AUTO_SESSION_FROM]:
-        abierta = [s for s in es_model.list_sessions(astronaut_id=astronaut_id, status="OPEN")]
+        abierta = [s for s in es_model.list_sessions(astronaut_id=astronaut_id)
+                   if s['mission_id'] == mission_id and s['status'] in ('OPEN', 'GUIDANCE_GIVEN')]
         if not abierta:
             auto_session_id = es_model.open_session(astronaut_id, mission_id, "PASSIVE_AUTO")
             es_model.update_session(auto_session_id, summary=(
                 f"Sesión automática: {peor['hazard_code']} en nivel {peor['alert_level']}. "
                 f"{peor['reason']}"))
+        from app.services.escalation_service import record_recommendation
+        record_recommendation(auto_session_id or abierta[0]['emergency_session_id'],
+                              peor.get('recommended_action'))
 
     return {
         "observation_id": obs_id,
@@ -77,6 +82,8 @@ def ingest_reading(astronaut_id: int, indicator_code: str, value: float,
         "worst_level": peor["alert_level"] if peor else "UNKNOWN",
         "reason": peor["reason"] if peor else None,
         "recommended_action": peor.get("recommended_action") if peor else None,
+        "assessment": assessment_summary(evals),
+        "ship_assessment": estado_nave["assessment"],
         "ship_state": estado_nave["state"],
         "ship_state_changed": estado_nave["changed"],
         "auto_emergency_session_id": auto_session_id,

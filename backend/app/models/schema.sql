@@ -263,3 +263,66 @@ CREATE TABLE IF NOT EXISTS emergency_session (
 );
 
 CREATE INDEX IF NOT EXISTS idx_emergency_session_astro ON emergency_session(astronaut_id, opened_at);
+
+-- Historial compartido: el paciente permanece en emergency_session; actor es quien opera.
+CREATE TABLE IF NOT EXISTS emergency_session_event (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES emergency_session(emergency_session_id),
+    operator_id INTEGER NOT NULL REFERENCES astronaut(astronaut_id),
+    kind TEXT NOT NULL CHECK (kind IN ('REPORT', 'TAKEOVER', 'STEP', 'MEASUREMENT')),
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_session_event ON emergency_session_event(session_id, event_id);
+
+CREATE TABLE IF NOT EXISTS api_operation (
+    operation_key TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    status_code INTEGER,
+    response_body BLOB,
+    content_type TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS alert_evaluation (
+    evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id INTEGER NOT NULL REFERENCES alert(alert_id),
+    anomaly_event_id INTEGER NOT NULL REFERENCES anomaly_event(anomaly_event_id),
+    level TEXT NOT NULL,
+    recommended_action TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS escalation_policy (
+    mission_id INTEGER PRIMARY KEY REFERENCES mission(mission_id),
+    response_timeout_seconds INTEGER NOT NULL CHECK(response_timeout_seconds > 0)
+);
+CREATE TABLE IF NOT EXISTS escalation_watch (
+    session_id INTEGER PRIMARY KEY REFERENCES emergency_session(emergency_session_id),
+    deadline_at REAL,
+    acknowledged_at REAL,
+    acknowledged_by INTEGER REFERENCES astronaut(astronaut_id)
+);
+CREATE TABLE IF NOT EXISTS escalation_recommendation (
+    session_id INTEGER NOT NULL REFERENCES emergency_session(emergency_session_id),
+    action TEXT NOT NULL CHECK(action IN ('NOTIFY_CREW','CONTACT_EARTH')),
+    PRIMARY KEY(session_id, action)
+);
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    notification_id TEXT PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES emergency_session(emergency_session_id),
+    channel TEXT NOT NULL CHECK(channel IN ('CREW','EARTH')),
+    reason TEXT NOT NULL CHECK(reason IN ('RECOMMENDATION','NO_RESPONSE')),
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('PREPARED','PENDING','SENT','CONFIRMED','CANCELLED')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at REAL NOT NULL,
+    lease_until REAL,
+    lease_token TEXT,
+    last_error TEXT,
+    created_at REAL NOT NULL,
+    sent_at REAL,
+    confirmed_at REAL,
+    UNIQUE(session_id, channel, reason)
+);

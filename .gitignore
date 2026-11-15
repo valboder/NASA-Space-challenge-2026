@@ -4,3 +4,4 @@ backend/data/guardian.db
 backend/data/models/*.joblib
 .DS_Store
 *.log
+AGENTS.md
