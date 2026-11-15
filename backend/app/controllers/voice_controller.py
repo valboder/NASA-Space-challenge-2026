@@ -3,9 +3,15 @@ from pydantic import ValidationError
 
 from app.services.voice_service import ingest_voice_report
 from app.models import voice as voice_model
+from app.models.emergency_session import CaseError
 from app.views.schemas import VoiceIngestRequest, validation_error_payload
 
 bp = Blueprint("voice", __name__, url_prefix="/api/voice")
+
+
+@bp.errorhandler(CaseError)
+def case_error(error):
+    return jsonify({"error": str(error)}), error.status
 
 
 @bp.post("/ingest")
@@ -17,7 +23,9 @@ def ingest():
         payload = VoiceIngestRequest(**(request.get_json(force=True) or {}))
     except ValidationError as e:
         return jsonify(validation_error_payload(e)), 400
-    result = ingest_voice_report(payload.astronaut_id, payload.mission_id, payload.transcript)
+    result = ingest_voice_report(payload.astronaut_id, payload.mission_id, payload.transcript,
+                                 session_id=payload.session_id, operator_id=payload.operator_id,
+                                 context_destination=payload.context_destination)
     return jsonify(result), 201
 
 

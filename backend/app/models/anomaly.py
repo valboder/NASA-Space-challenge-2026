@@ -62,18 +62,55 @@ def create_event(anomaly_model_id: int, anomaly_score: float, hazard_id: int | N
 
 def create_alert(anomaly_event_id: int, level: str, recommended_action: str, message: str) -> int:
     with session() as conn:
-        cur = conn.execute(
-            """INSERT INTO alert (anomaly_event_id, level, recommended_action, message)
-               VALUES (?,?,?,?)""",
-            (anomaly_event_id, level, recommended_action, message),
-        )
-        alert_id = cur.lastrowid
-        conn.execute(
-            """INSERT INTO data_access_log (actor, action, entity_touched, entity_id, alert_id, purpose)
-               VALUES ('anomaly_service','CREATE','alert',?,?, 'Generación automática de alerta por IA')""",
-            (alert_id, alert_id),
-        )
+        conn.execute('BEGIN IMMEDIATE')
+        event = conn.execute("""SELECT e.*, m.context_destination FROM anomaly_event e
+            JOIN anomaly_model m ON m.anomaly_model_id=e.anomaly_model_id
+            WHERE e.anomaly_event_id=?""", (anomaly_event_id,)).fetchone()
+        if event is None:
+            raise ValueError('Evento de evaluación inexistente')
+        existing = conn.execute("""SELECT a.* FROM alert a
+            JOIN anomaly_event e ON e.anomaly_event_id=a.anomaly_event_id
+            JOIN anomaly_model m ON m.anomaly_model_id=e.anomaly_model_id
+            WHERE e.astronaut_id IS ? AND e.habitat_id IS ? AND e.hazard_id IS ?
+              AND m.context_destination=? AND a.status IN ('OPEN','ACKNOWLEDGED')
+            ORDER BY a.alert_id DESC LIMIT 1""",
+            (event['astronaut_id'], event['habitat_id'], event['hazard_id'], event['context_destination'])).fetchone()
+        if existing:
+            alert_id = existing['alert_id']
+            # Conserva también el estado anterior de alertas creadas antes de esta mejora.
+            if not conn.execute('SELECT 1 FROM alert_evaluation WHERE alert_id=? LIMIT 1', (alert_id,)).fetchone():
+                conn.execute("""INSERT INTO alert_evaluation
+                    (alert_id,anomaly_event_id,level,recommended_action,message,created_at)
+                    VALUES (?,?,?,?,?,?)""", (alert_id, existing['anomaly_event_id'], existing['level'],
+                    existing['recommended_action'], existing['message'], existing['created_at']))
+            # .get(..., -1) en vez de indexar directo: el único llamador hoy
+            # (emergency_service.evaluate_astronaut_hazard) nunca pasa GREEN
+            # ni UNKNOWN aquí, pero si algo cambiara eso un día, un nivel
+            # fuera de este diccionario no debe tumbar con KeyError la
+            # persistencia de una alerta ya creada.
+            rank = {'GREEN': 0, 'YELLOW': 1, 'ORANGE': 2, 'RED': 3}
+            status = 'OPEN' if rank.get(level, -1) > rank.get(existing['level'], -1) else existing['status']
+            conn.execute('UPDATE alert SET level=?,recommended_action=?,message=?,status=? WHERE alert_id=?',
+                         (level, recommended_action, message, status, alert_id))
+            action = 'UPDATE'
+        else:
+            cur = conn.execute("""INSERT INTO alert (anomaly_event_id,level,recommended_action,message)
+                VALUES (?,?,?,?)""", (anomaly_event_id, level, recommended_action, message))
+            alert_id = cur.lastrowid
+            action = 'CREATE'
+        conn.execute("""INSERT INTO alert_evaluation
+            (alert_id,anomaly_event_id,level,recommended_action,message) VALUES (?,?,?,?,?)""",
+            (alert_id, anomaly_event_id, level, recommended_action, message))
+        conn.execute("""INSERT INTO data_access_log (actor,action,entity_touched,entity_id,alert_id,purpose)
+            VALUES ('anomaly_service',?,'alert',?,?, 'Evaluación del episodio activo')""",
+            (action, alert_id, alert_id))
         return alert_id
+
+
+def alert_history(alert_id):
+    with session() as conn:
+        return rows_to_list(conn.execute(
+            'SELECT * FROM alert_evaluation WHERE alert_id=? ORDER BY evaluation_id', (alert_id,)).fetchall())
 
 
 def set_alert_status(alert_id: int, status: str) -> None:

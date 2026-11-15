@@ -13,11 +13,16 @@ from app.controllers import (
     emergency_controller,
     button_controller,
     ship_controller,
+    escalation_controller,
 )
 
 
 def create_app() -> Flask:
+    from app.core.db import init_db
+    init_db()  # CREATE IF NOT EXISTS: añade tablas nuevas sin borrar datos existentes.
     app = Flask(__name__)
+    from app.core.idempotency import register_idempotency
+    register_idempotency(app)
 
     @app.get("/api/health")
     def health():
@@ -30,6 +35,7 @@ def create_app() -> Flask:
     app.register_blueprint(emergency_controller.bp)
     app.register_blueprint(button_controller.bp)
     app.register_blueprint(ship_controller.bp)
+    app.register_blueprint(escalation_controller.bp)
 
     @app.errorhandler(404)
     def not_found(e):

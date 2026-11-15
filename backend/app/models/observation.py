@@ -109,8 +109,8 @@ def series_for_indicator(astronaut_id: int, indicator_code: str) -> list[dict]:
     orden alfabético, no cronológico, y el "valor actual" saldría equivocado.
     """
     with session() as conn:
-        q = """SELECT o.recorded_at, o.day_relative_to_launch, o.value_numeric, o.unit,
-                      o.data_origin, mp.phase_type
+        q = """SELECT o.observation_id, o.recorded_at, o.day_relative_to_launch, o.value_numeric,
+                      o.unit, o.data_origin, o.created_at, mp.phase_type
                FROM observation o
                JOIN indicator i ON i.indicator_id = o.indicator_id
                LEFT JOIN mission_phase mp ON mp.mission_phase_id = o.mission_phase_id
@@ -119,3 +119,18 @@ def series_for_indicator(astronaut_id: int, indicator_code: str) -> list[dict]:
                         o.day_relative_to_launch,
                         o.recorded_at"""
         return rows_to_list(conn.execute(q, (astronaut_id, indicator_code)).fetchall())
+
+
+def latest_for_indicator(astronaut_id: int, indicator_code: str) -> dict | None:
+    """Última observación por orden real de escritura (`created_at`), para
+    decidir vigencia/antigüedad (P08). `series_for_indicator` ordena por
+    `day_relative_to_launch`, que en datasets NASA no es un reloj real y no
+    sirve para decidir si algo está desactualizado *ahora*."""
+    with session() as conn:
+        row = conn.execute(
+            """SELECT o.observation_id, o.created_at, o.recorded_at, o.value_numeric
+               FROM observation o JOIN indicator i ON i.indicator_id = o.indicator_id
+               WHERE o.astronaut_id=? AND i.code=? AND o.value_numeric IS NOT NULL
+               ORDER BY o.created_at DESC, o.observation_id DESC LIMIT 1""",
+            (astronaut_id, indicator_code)).fetchone()
+        return row_to_dict(row)

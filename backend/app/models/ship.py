@@ -31,26 +31,43 @@ def set_state(mission_id: int, state: str, reason: str,
               driven_by_astronaut_id: int | None = None,
               driven_by_hazard: str | None = None) -> dict:
     """Registra un cambio de estado SOLO si difiere del actual (evita ruido en la
-    bitácora). Devuelve {changed: bool, previous, current}."""
+    bitácora). Devuelve {changed: bool, previous, current}.
+
+    P07: el "leer estado actual -> decidir si insertar" es un check-then-act
+    clásico. Antes se hacía con DOS conexiones separadas (una para leer en
+    `current_state`, otra para el INSERT), así que dos llamadas concurrentes
+    para la misma misión podían leer el mismo `prev` antes de que ninguna
+    escribiera, y las dos decidir "cambió" e insertar — dos eventos en vez de
+    uno, o un INSERT con `previous_state` ya desactualizado. Igual que
+    `open_session`/`append_event`/`create_alert`, se serializa con
+    `BEGIN IMMEDIATE` en una sola conexión: quien toma el lock primero ve el
+    estado fresco y decide; el siguiente ve el estado YA actualizado.
+    """
     if state not in VALID_STATES:
         raise ValueError(f"Estado inválido: {state}")
-    prev = current_state(mission_id)
-    if prev["state"] == state:
-        return {"changed": False, "previous_state": prev["state"], "state": state,
-                "mission_id": mission_id}
     with session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT * FROM ship_state_event WHERE mission_id=?
+               ORDER BY created_at DESC, ship_state_event_id DESC LIMIT 1""",
+            (mission_id,),
+        ).fetchone()
+        prev_state = row["state"] if row is not None else "NORMAL"
+        if prev_state == state:
+            return {"changed": False, "previous_state": prev_state, "state": state,
+                    "mission_id": mission_id}
         conn.execute(
             """INSERT INTO ship_state_event
                  (mission_id, state, previous_state, reason, driven_by_astronaut_id, driven_by_hazard)
                VALUES (?,?,?,?,?,?)""",
-            (mission_id, state, prev["state"], reason, driven_by_astronaut_id, driven_by_hazard),
+            (mission_id, state, prev_state, reason, driven_by_astronaut_id, driven_by_hazard),
         )
         conn.execute(
             """INSERT INTO data_access_log (actor, action, entity_touched, purpose)
                VALUES ('ship_interlock','UPDATE','ship_state_event', ?)""",
-            (f"Nave {prev['state']} -> {state}: {reason}",),
+            (f"Nave {prev_state} -> {state}: {reason}",),
         )
-    return {"changed": True, "previous_state": prev["state"], "state": state,
+    return {"changed": True, "previous_state": prev_state, "state": state,
             "mission_id": mission_id, "reason": reason}
 
 

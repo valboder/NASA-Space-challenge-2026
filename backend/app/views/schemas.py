@@ -14,6 +14,14 @@ class VoiceIngestRequest(BaseModel):
     astronaut_id: int
     mission_id: int
     transcript: str = Field(min_length=1)
+    # P02: opcionales. Cuando se manda session_id, este reporte de voz se
+    # vincula al caso compartido en curso y dispara el mismo ciclo de
+    # reevaluación que el monitoreo pasivo (en vez de guardarse "suelto").
+    # Sin ellos el endpoint se comporta exactamente como antes (compatible).
+    session_id: Optional[int] = None
+    operator_id: Optional[int] = None
+    context_destination: Optional[
+        Literal["LEO", "LUNAR_SURFACE", "MARS_TRANSIT", "MARS_SURFACE", "DEEP_SPACE"]] = None
 
 
 class ObservationCreateRequest(BaseModel):
@@ -30,6 +38,11 @@ class ObservationCreateRequest(BaseModel):
     value_text: Optional[str] = None
     day_relative_to_launch: Optional[int] = None
     notes: Optional[str] = None
+    # P02: opcionales, mismo criterio que en VoiceIngestRequest arriba.
+    session_id: Optional[int] = None
+    operator_id: Optional[int] = None
+    context_destination: Optional[
+        Literal["LEO", "LUNAR_SURFACE", "MARS_TRANSIT", "MARS_SURFACE", "DEEP_SPACE"]] = None
 
     @field_validator("unit", "measurement_method")
     @classmethod

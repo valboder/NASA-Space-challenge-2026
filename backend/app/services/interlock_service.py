@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from app.models import ship as ship_model
 from app.services.emergency_service import evaluate_all_active_hazards
+from app.services.assessment_status import assessment_summary, LEVEL_RANK
 
 LEVEL_TO_STATE = {
     "RED": "LOCKED",
@@ -28,7 +29,10 @@ LEVEL_TO_STATE = {
     "GREEN": "NORMAL",
     "UNKNOWN": "NORMAL",
 }
-LEVEL_RANK = {"RED": 4, "ORANGE": 3, "YELLOW": 2, "GREEN": 1, "UNKNOWN": 0}
+# LEVEL_RANK se importa de assessment_status (antes se redefinía aquí con los
+# mismos valores por casualidad; dos jerarquías de severidad mantenidas a
+# mano en archivos distintos solo coinciden mientras alguien se acuerde de
+# editar las dos a la vez — una sola fuente evita que diverjan en silencio).
 
 
 def recompute_ship_state(mission_id: int, context_destination: str | None = None,
@@ -37,20 +41,13 @@ def recompute_ship_state(mission_id: int, context_destination: str | None = None
 
     Devuelve el estado resultante, quién lo motivó y si hubo cambio.
     """
-    from app.models import mission as mission_model
-    peor_nivel, peor = "UNKNOWN", None
-    for a in mission_model.list_astronauts(mission_id):
-        for ev in evaluate_all_active_hazards(a["astronaut_id"], context_destination, persist=persist_alerts):
-            if LEVEL_RANK.get(ev["alert_level"], 0) > LEVEL_RANK[peor_nivel]:
-                peor_nivel = ev["alert_level"]
-                peor = {"astronaut_id": a["astronaut_id"], "call_sign": a["call_sign"],
-                        "hazard": ev["hazard_code"], "reason": ev["reason"]}
+    peor_nivel, peor, assessment = _crew_assessment(mission_id, context_destination, persist_alerts)
 
     nuevo_estado = LEVEL_TO_STATE[peor_nivel]
     if peor:
         razon = f"{peor['call_sign']} / {peor['hazard']}: {peor['reason']}"
     else:
-        razon = "Tripulación sin anomalías evaluables; estado normal."
+        razon = "Estado operacional NORMAL por defecto; salud sin evaluar."
 
     resultado = ship_model.set_state(
         mission_id, nuevo_estado, razon,
@@ -60,15 +57,37 @@ def recompute_ship_state(mission_id: int, context_destination: str | None = None
     return {
         **resultado,
         "worst_level": peor_nivel,
+        "assessment": assessment,
+        "reason": razon,
         "driver": peor,
         "activities": ship_model.activities_with_status(mission_id),
     }
 
 
+def _crew_assessment(mission_id, context_destination=None, persist_alerts=False):
+    from app.models import mission as mission_model
+    peor_nivel, peor = "UNKNOWN", None
+    evaluations = []
+    for a in mission_model.list_astronauts(mission_id):
+        for ev in evaluate_all_active_hazards(a["astronaut_id"], context_destination, persist=persist_alerts):
+            evaluations.append(ev)
+            if LEVEL_RANK.get(ev["alert_level"], 0) > LEVEL_RANK[peor_nivel]:
+                peor_nivel = ev["alert_level"]
+                peor = {"astronaut_id": a["astronaut_id"], "call_sign": a["call_sign"],
+                        "hazard": ev["hazard_code"], "reason": ev["reason"]}
+
+    return peor_nivel, peor, assessment_summary(evaluations)
+
+
 def get_ship_status(mission_id: int) -> dict:
     estado = ship_model.current_state(mission_id)
+    level, driver, assessment = _crew_assessment(mission_id)
     return {
         **estado,
+        "worst_level": level,
+        "assessment": assessment,
+        "driver": driver,
+        "state_basis": "Último estado operacional registrado; assessment es la evaluación actual.",
         "activities": ship_model.activities_with_status(mission_id),
         "history": ship_model.state_history(mission_id, limit=10),
     }
