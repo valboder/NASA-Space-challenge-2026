@@ -22,10 +22,18 @@ from __future__ import annotations
 
 import re
 
+from datetime import datetime, timezone
+
 from app.models import catalog, observation as obs_model, emergency_session as es_model
+from app.models import mission as mission_model
 from app.services.voice_service import parse_transcript
-from app.services.emergency_service import evaluate_astronaut_hazard
+from app.services.emergency_service import evaluate_astronaut_hazard, evaluate_all_active_hazards
 from app.ml.personal_baseline import evaluate_indicator
+
+# P08: si el catálogo no define typical_recheck_days para un indicador, se usa
+# esta ventana por defecto (conservadora: medio día) en lugar de tratar
+# cualquier dato histórico, sin importar su edad, como vigente.
+DEFAULT_RECHECK_DAYS = 0.5
 
 # ---------------------------------------------------------------------------
 # Adaptación por entorno (lo que pide explícitamente el video del brief:
@@ -49,6 +57,8 @@ ENVIRONMENT_PROFILES: dict[str, dict] = {
         "restrain_note": "En microgravedad no se puede recostar a una persona: hay que "
                           "SUJETARLA contra una superficie o restricción (correa, pared) "
                           "para que no quede flotando, antes de evaluarla o hacer RCP.",
+        "fall_note": "En microgravedad no hay 'caída': sujétate a un asa o superficie fija "
+                     "para no quedar flotando sin control mientras se te pasa el mareo.",
     },
     "LUNAR_SURFACE": {
         "label": "Base en superficie lunar",
@@ -73,6 +83,8 @@ ENVIRONMENT_PROFILES: dict[str, dict] = {
         "restrain_note": "En microgravedad no se puede recostar a una persona: hay que "
                           "SUJETARLA contra una superficie o restricción (correa, pared) "
                           "para que no quede flotando, antes de evaluarla o hacer RCP.",
+        "fall_note": "En microgravedad no hay 'caída': sujétate a un asa o superficie fija "
+                     "para no quedar flotando sin control mientras se te pasa el mareo.",
     },
     "MARS_SURFACE": {
         "label": "Superficie de Marte",
@@ -96,21 +108,38 @@ ENVIRONMENT_PROFILES: dict[str, dict] = {
         "restrain_note": "En microgravedad no se puede recostar a una persona: hay que "
                           "SUJETARLA contra una superficie o restricción (correa, pared) "
                           "para que no quede flotando, antes de evaluarla o hacer RCP.",
+        "fall_note": "En microgravedad no hay 'caída': sujétate a un asa o superficie fija "
+                     "para no quedar flotando sin control mientras se te pasa el mareo.",
     },
 }
 
 MICROGRAVITY_DESTINATIONS = {"LEO", "MARS_TRANSIT", "DEEP_SPACE"}
 
+# Pasos del léxico que no tienen sentido literal en microgravedad y necesitan
+# reescritura, mapeados a la nota de ENVIRONMENT_PROFILES que los reemplaza.
+# Antes solo se cubría "recuéstala de lado" (alguien asistiendo a OTRA
+# persona, en tercera persona): "Siéntate o recuéstate para no caer" es el
+# mismo problema físico (recostarse / no hay "caída" sin gravedad) pero
+# dirigido a quien reporta el síntoma EN PRIMERA PERSONA, así que no podía
+# reusar el mismo texto (está escrito para alguien haciendo RCP a otro) ni
+# coincidir con el `in` original — se perdía en silencio.
+_MICROGRAVITY_STEP_OVERRIDES = {
+    "recuéstala de lado": "restrain_note",
+    "para no caer": "fall_note",
+}
+
 
 def _adapt_step_text(step: str, destination: str | None) -> str:
     """Reescribe un paso puntual cuando el entorno cambia cómo se ejecuta.
 
-    Por ahora el único caso con texto distinto es "recuéstala de lado", que no
-    tiene sentido en microgravedad. El resto de los pasos (medir, avisar,
-    hidratarse) no cambian por entorno, así que se dejan igual.
+    Los pasos de medir, avisar o hidratarse no cambian por entorno, así que
+    se dejan igual; solo los que asumen gravedad (recostarse, "caerse") se
+    reescriben en destinos de microgravedad.
     """
-    if destination in MICROGRAVITY_DESTINATIONS and "recuéstala de lado" in step:
-        return ENVIRONMENT_PROFILES[destination]["restrain_note"]
+    if destination in MICROGRAVITY_DESTINATIONS:
+        for fragmento, nota in _MICROGRAVITY_STEP_OVERRIDES.items():
+            if fragmento in step:
+                return ENVIRONMENT_PROFILES[destination][nota]
     return step
 
 
@@ -215,56 +244,154 @@ def detect_symptoms(transcript: str) -> list[dict]:
     return found
 
 
-def _stale_or_missing(astronaut_id: int, indicator_codes: list[str]) -> list[str]:
-    """De una lista de indicadores, cuáles no tienen dato o no son evaluables ahora."""
-    faltantes = []
+def _parse_created_at(value: str | None):
+    if not value:
+        return None
+    try:
+        # SQLite datetime('now') produce 'YYYY-MM-DD HH:MM:SS' en UTC.
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+
+def _stale_or_missing(astronaut_id: int, indicator_codes: list[str]) -> list[dict]:
+    """Para cada indicador: si falta, está vigente o está vencido (P08).
+
+    Antes esta función solo comprobaba existencia ('¿hay algún dato?'), así
+    que una medición de hace semanas bastaba para no pedir una nueva. Ahora
+    compara la antigüedad REAL de la última observación (su `created_at`,
+    hora de escritura en la base — no `recorded_at`, que en varias fuentes
+    NASA es texto como 'study_day_1' y no sirve como reloj) contra la ventana
+    de revisión del indicador (`typical_recheck_days` del catálogo). No se usa
+    `day_relative_to_launch`/`recorded_at` para esta decisión a propósito.
+    """
+    resultado = []
+    ahora = datetime.now(timezone.utc)
     for code in indicator_codes:
-        series = obs_model.series_for_indicator(astronaut_id, code)
-        if not series:
-            faltantes.append(code)
-    return faltantes
+        ultima = obs_model.latest_for_indicator(astronaut_id, code)
+        if ultima is None:
+            resultado.append({"indicator_code": code, "status": "MISSING",
+                              "last_measured_at": None, "needs_measurement": True})
+            continue
+        ind = catalog.get_indicator(code) or {}
+        ventana_dias = ind.get("typical_recheck_days") or DEFAULT_RECHECK_DAYS
+        momento = _parse_created_at(ultima.get("created_at"))
+        if momento is None:
+            # No se puede establecer antigüedad real: no se asume vigente en silencio.
+            resultado.append({"indicator_code": code, "status": "STALE",
+                              "last_measured_at": ultima.get("created_at"), "needs_measurement": True,
+                              "reason": "antigüedad no determinable"})
+            continue
+        edad_dias = (ahora - momento).total_seconds() / 86400
+        if edad_dias > ventana_dias:
+            resultado.append({"indicator_code": code, "status": "STALE",
+                              "last_measured_at": ultima.get("created_at"), "needs_measurement": True,
+                              "age_days": round(edad_dias, 2), "recheck_days": ventana_dias})
+        else:
+            resultado.append({"indicator_code": code, "status": "FRESH",
+                              "last_measured_at": ultima.get("created_at"), "needs_measurement": False,
+                              "age_days": round(edad_dias, 2), "recheck_days": ventana_dias})
+    return resultado
 
 
 def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
                      context_destination: str | None = None,
-                     session_id: int | None = None, voice_log_id: int | None = None) -> dict:
+                     session_id: int | None = None, voice_log_id: int | None = None,
+                     operator_id: int | None = None) -> dict:
     """Orquesta la respuesta del asistente a un reporte por voz."""
     if session_id is None:
         session_id = es_model.open_session(astronaut_id, mission_id, "PANIC_BUTTON", voice_log_id)
+
+    # P09: el destino se resuelve UNA SOLA VEZ aquí y se reutiliza para todo lo
+    # demás (evaluación, adaptación de pasos, mensaje de entorno). Antes, si el
+    # cliente omitía context_destination, cada función que lo recibía (perfil
+    # de entorno, evaluación de hazard, modelo de IA) le ponía por su cuenta un
+    # valor por defecto de LEO -> un tripulante en Marte podía ver "LEO,
+    # microgravedad" aunque su misión real fuera MARS_SURFACE.
+    resolucion_contexto = mission_model.resolve_destination(mission_id, context_destination)
+    destino = resolucion_contexto["destination"]
 
     # 1. Qué reportó el astronauta: valores numéricos + síntomas cualitativos
     valores = parse_transcript(transcript)
     sintomas = detect_symptoms(transcript)
 
+    # P02: los valores que el astronauta reportó por voz durante la emergencia
+    # se guardan como observaciones reales y quedan vinculados al caso — antes
+    # se detectaban (`valores`) pero nunca se persistían, así que una lectura
+    # dicha por voz durante una emergencia se perdía en cuanto terminaba la
+    # respuesta HTTP.
+    valores_guardados = []
+    voice_source_id = catalog.get_data_source_id("VOICE_INPUT") if valores else None
+    for v in valores:
+        indicator_id = catalog.get_indicator_id(v["indicator_code"])
+        if indicator_id is None or voice_source_id is None:
+            continue
+        obs_id = obs_model.record_observation(
+            indicator_id=indicator_id, mission_id=mission_id, data_source_id=voice_source_id,
+            data_origin="REAL", recorded_at=datetime.now(timezone.utc).isoformat(),
+            unit=v["unit"], measurement_method=v["method"], astronaut_id=astronaut_id,
+            value_numeric=v["value"], voice_log_id=voice_log_id,
+            notes="Generado por el asistente de emergencia (botón/voz activa).",
+        )
+        v["observation_id"] = obs_id
+        valores_guardados.append(obs_id)
+        es_model.append_event(session_id, operator_id or astronaut_id, "MEASUREMENT",
+                              {"observation_id": obs_id})
+
     # 2. Hazards implicados por lo que dijo
     hazards_implicados = {s["hazard"] for s in sintomas}
-    # siempre incluye los hazards activos para no perder el contexto pasivo
     activos = {h["code"] for h in catalog.list_hazards(active_only=True)}
 
-    # 3. Evaluación pasiva de cada hazard implicado que esté activo
+    # 3. P03: evaluar SIEMPRE todos los hazards activos, no solo los que el
+    # reporte menciona. Antes se cruzaba hazards_implicados & activos, así que
+    # un hazard ya en rojo por telemetría pasiva desaparecía de la respuesta
+    # si el astronauta reportaba síntomas de OTRO hazard (o ninguno). Se marca
+    # cuál evaluación corresponde a lo recién reportado para no perder esa
+    # distinción (de qué evaluación salió la acción recomendada).
     evaluaciones = []
-    for hz in sorted(hazards_implicados & activos):
-        evaluaciones.append(evaluate_astronaut_hazard(astronaut_id, hz, context_destination, persist=True))
+    for hz in sorted(activos):
+        ev = evaluate_astronaut_hazard(astronaut_id, hz, destino, persist=True)
+        ev["reported_now"] = hz in hazards_implicados
+        evaluaciones.append(ev)
 
     # 4. Construir la guía: pasos + qué medir + acción
     pasos: list[str] = []
     medir: list[dict] = []
+    medir_vigentes: list[dict] = []
     from app.services.assessment_status import assessment_summary, LEVEL_URGENCY, URGENCY_RANK
     urgencia_max = "UNKNOWN"
     orden_urgencia = URGENCY_RANK
+    # Códigos a verificar, deduplicados ANTES de consultar la base: si dos
+    # síntomas reportados piden el mismo indicador (p.ej. HEART_RATE en dos
+    # entradas del léxico), antes se consultaba dos veces y, si el resultado
+    # era FRESH, `medir_vigentes` terminaba con el mismo indicador repetido
+    # (a diferencia de `medir`, que sí se deduplicaba más abajo). Con una
+    # sola consulta por código, ninguna de las dos listas puede duplicarse.
+    codigos_a_verificar = list(dict.fromkeys(c for s in sintomas for c in s["measure"]))
+    estados_por_codigo = {e["indicator_code"]: e for e in _stale_or_missing(astronaut_id, codigos_a_verificar)}
     for s in sintomas:
-        pasos.extend(_adapt_step_text(p, context_destination) for p in s["steps"])
+        pasos.extend(_adapt_step_text(p, destino) for p in s["steps"])
         if orden_urgencia[s["urgency"]] > orden_urgencia[urgencia_max]:
             urgencia_max = s["urgency"]
-        for code in _stale_or_missing(astronaut_id, s["measure"]):
-            ind = catalog.get_indicator(code) or {}
-            # Incluye CÓMO medir y POR QUÉ importa (requisito del brief):
-            medir.append({
-                "indicator_code": code, "name": ind.get("name", code),
-                "unit": ind.get("default_unit"), "method": ind.get("default_method"),
-                "how_to_measure": ind.get("how_to_measure"),
-                "why_it_matters": ind.get("why_it_matters"),
-            })
+    # P08: distingue indicador sin dato nunca / con dato vencido / vigente,
+    # en vez de bastar con "¿existe alguna observación alguna vez?".
+    for code, estado in estados_por_codigo.items():
+        if estado["status"] == "FRESH":
+            medir_vigentes.append(estado)
+            continue
+        ind = catalog.get_indicator(code) or {}
+        # Incluye CÓMO medir y POR QUÉ importa (requisito del brief):
+        medir.append({
+            "indicator_code": code, "name": ind.get("name", code),
+            "unit": ind.get("default_unit"), "method": ind.get("default_method"),
+            "how_to_measure": ind.get("how_to_measure"),
+            "why_it_matters": ind.get("why_it_matters"),
+            "status": estado["status"],
+            "last_measured_at": estado.get("last_measured_at"),
+        })
 
     # 5. Acción recomendada: la MÁS SEVERA entre (a) las evaluaciones pasivas y
     #    (b) el piso de acción de cada síntoma reportado. Así un síntoma grave
@@ -291,7 +418,7 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
     pasos_unicos = list(dict.fromkeys(pasos))
     medir_unicos = list({m["indicator_code"]: m for m in medir}.values())
 
-    entorno = environment_context(context_destination)
+    entorno = environment_context(destino)
 
     if not sintomas and not valores:
         mensaje = ("No identifiqué síntomas ni valores en tu reporte. ¿Puedes decir qué sientes "
@@ -315,13 +442,16 @@ def handle_emergency(astronaut_id: int, mission_id: int, transcript: str,
         "detected_symptoms": [s["patterns"][0] for s in sintomas],
         "implicated_hazards": sorted(hazards_implicados),
         "passive_context": [{"hazard": e["hazard_code"], "level": e["alert_level"],
-                              "reason": e["reason"]} for e in evaluaciones],
+                              "reason": e["reason"], "reported_now": e["reported_now"]} for e in evaluaciones],
         "urgency": urgencia_max,
         "message": mensaje,
         "immediate_steps": pasos_unicos,
         "measurements_to_take": medir_unicos,
+        "measurements_up_to_date": medir_vigentes,
+        "recorded_observation_ids": valores_guardados,
         "recommended_action": accion,
         "worst_passive_level": nivel_peor,
         "assessment": assessment,
         "environment": entorno,
+        "context_resolution": resolucion_contexto,
     }

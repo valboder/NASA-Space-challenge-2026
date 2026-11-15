@@ -182,6 +182,20 @@ python -m tests.test_assistant_environment # verifica la adaptación por entorno
 python run.py                         # http://localhost:8000
 ```
 
+Para que el escalamiento por falta de respuesta (P05) de verdad dispare avisos
+durante la demo —y no solo quede "preparado"— hace falta un segundo proceso,
+independiente de `run.py`, sondeando en paralelo:
+```bash
+python escalation_worker.py --retry-seconds 60     # proceso aparte, deja corriendo
+```
+Sin este proceso corriendo, `run.py` solo seguirá dejando los avisos en estado
+PREPARED cuando venza el plazo, pero nadie los despachará hacia la tripulación
+ni la Tierra hasta que algo vuelva a llamar a `prepare_notifications`/
+`dispatch_notifications` (p.ej. este worker, o `--once` manual). Ver
+`backend/tests/test_escalation.py` para el comportamiento verificado
+(reintentos sin duplicados, recuperación tras reinicio, confirmación de
+entrega).
+
 Para la voz offline (opcional, se corre en la máquina de la nave):
 ```bash
 pip install faster-whisper            # transcripción local; sin esto, el botón usa texto

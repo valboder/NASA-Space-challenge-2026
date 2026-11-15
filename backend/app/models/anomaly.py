@@ -83,8 +83,13 @@ def create_alert(anomaly_event_id: int, level: str, recommended_action: str, mes
                     (alert_id,anomaly_event_id,level,recommended_action,message,created_at)
                     VALUES (?,?,?,?,?,?)""", (alert_id, existing['anomaly_event_id'], existing['level'],
                     existing['recommended_action'], existing['message'], existing['created_at']))
+            # .get(..., -1) en vez de indexar directo: el único llamador hoy
+            # (emergency_service.evaluate_astronaut_hazard) nunca pasa GREEN
+            # ni UNKNOWN aquí, pero si algo cambiara eso un día, un nivel
+            # fuera de este diccionario no debe tumbar con KeyError la
+            # persistencia de una alerta ya creada.
             rank = {'GREEN': 0, 'YELLOW': 1, 'ORANGE': 2, 'RED': 3}
-            status = 'OPEN' if rank[level] > rank[existing['level']] else existing['status']
+            status = 'OPEN' if rank.get(level, -1) > rank.get(existing['level'], -1) else existing['status']
             conn.execute('UPDATE alert SET level=?,recommended_action=?,message=?,status=? WHERE alert_id=?',
                          (level, recommended_action, message, status, alert_id))
             action = 'UPDATE'

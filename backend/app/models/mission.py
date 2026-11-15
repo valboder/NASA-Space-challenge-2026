@@ -1,6 +1,8 @@
 """Model: mission, mission_phase, astronaut, habitat."""
 from __future__ import annotations
 
+import sqlite3
+
 from app.core.db import session, rows_to_list, row_to_dict
 
 
@@ -22,6 +24,35 @@ def create_mission(code: str, name: str, destination: str, launch_date: str | No
 def get_mission_by_code(code: str) -> dict | None:
     with session() as conn:
         return row_to_dict(conn.execute("SELECT * FROM mission WHERE code=?", (code,)).fetchone())
+
+
+def get_mission(mission_id: int) -> dict | None:
+    with session() as conn:
+        return row_to_dict(conn.execute("SELECT * FROM mission WHERE mission_id=?", (mission_id,)).fetchone())
+
+
+def resolve_destination(mission_id: int, context_destination: str | None = None) -> dict:
+    """Resuelve el destino UNA SOLA VEZ, en un solo lugar (P09).
+
+    Prioridad explícita: un `context_destination` recibido del cliente es una
+    anulación deliberada para demos (p.ej. forzar MARS_SURFACE en una misión
+    LEO de prueba) y gana. Si no se recibe ninguno, se usa el destino REAL de
+    la misión del caso — nunca un valor por defecto fijo tipo LEO, que es lo
+    que causaba que un tripulante en Marte apareciera como si estuviera en
+    órbita baja. Si la misión no existe (no debería pasar, pero no se asume
+    en silencio), se marca explícitamente como no resuelto.
+    """
+    if context_destination:
+        return {"destination": context_destination, "source": "override_explicito", "resolved": True}
+    try:
+        mission = get_mission(mission_id)
+    except sqlite3.OperationalError:
+        # Esquema no inicializado (p.ej. pruebas unitarias que no tocan la BD
+        # real): no se puede resolver, pero no debe tumbar el flujo completo.
+        return {"destination": None, "source": "esquema_no_disponible", "resolved": False}
+    if mission is None:
+        return {"destination": None, "source": "mision_no_encontrada", "resolved": False}
+    return {"destination": mission["destination"], "source": "mision", "resolved": True}
 
 
 def list_missions() -> list[dict]:

@@ -77,7 +77,7 @@ def panic_button():
     vl_id = voice_model.create_voice_log(astronaut_id, mission_id, transcript)
     result = handle_emergency(astronaut_id, mission_id, transcript,
                               body.get("context_destination"), session_id=session_id,
-                              voice_log_id=vl_id)
+                              voice_log_id=vl_id, operator_id=operator_id)
     if trans is not None:
         result["transcription"] = trans
     es_model.append_event(result["session_id"], operator_id, "REPORT", dict(result))

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from app.ml.personal_baseline import evaluate_hazard, evaluate_indicator
 from app.models import anomaly as anomaly_model, catalog, observation as obs_model
+from app.services import assessment_status
 
 # Calibración elegida: favorecer detección. Sin médico a bordo y con hasta 20
 # minutos de retraso hacia la Tierra, perder una emergencia real cuesta más que
@@ -95,20 +96,41 @@ def crew_summary(mission_id: int, context_destination: str | None = None) -> lis
     """Resumen de toda la tripulación: una línea por tripulante con su peor nivel.
 
     Sin persistir alertas — es una vista de lectura para el panel.
+
+    Antes esta función tenía su propia jerarquía de severidad local
+    (`rank = {"RED":3,...,"GREEN":0,"UNKNOWN":-1}`) en vez de usar
+    `assessment_summary` (la misma que ya usan `handle_emergency` y el
+    interlock de la nave). Esa jerarquía propia SÍ ordenaba bien a UNKNOWN
+    por debajo de todo lo evaluado (igual que excluirlo), así que
+    `worst_level` no salía mal calculado por sí solo — el hueco real es que
+    la función no devolvía ningún campo de disponibilidad: un tripulante con
+    GRAVITY sin evaluar (UNKNOWN) y ISOLATION en GREEN aparecía en el panel
+    como "worst_level: GREEN, worst_hazard: ISOLATION" sin ninguna señal de
+    que GRAVITY nunca se evaluó — ni el nombre de ese hazard, ni un
+    `availability`. Es el mismo principio que P04 ya aplicó en otras partes
+    ("la ausencia de evaluación no debe presentarse como normalidad
+    confirmada") pero sin la pieza que lo hace visible aquí. Se corrige
+    reusando `assessment_summary` (en vez de la jerarquía local duplicada) y
+    exponiendo `assessment` completo, para que el panel pueda distinguir
+    "todo evaluado y en verde" (`availability: COMPLETE`) de "en verde, pero
+    falta evaluar algo" (`PARTIAL`).
     """
     from app.models import mission as mission_model
-    rank = {"RED": 3, "ORANGE": 2, "YELLOW": 1, "GREEN": 0, "UNKNOWN": -1}
     salida = []
     for a in mission_model.list_astronauts(mission_id):
         evals = evaluate_all_active_hazards(a["astronaut_id"], context_destination, persist=False)
-        peor = max(evals, key=lambda e: rank.get(e["alert_level"], -1)) if evals else None
+        assessment = assessment_status.assessment_summary(evals)
+        evaluados = [e for e in evals if e.get("alert_level") != "UNKNOWN"]
+        peor = max(evaluados, key=lambda e: assessment_status.LEVEL_RANK.get(e["alert_level"], 0)) \
+            if evaluados else None
         salida.append({
             "astronaut_id": a["astronaut_id"],
             "call_sign": a["call_sign"],
             "display_name": a["display_name"],
-            "worst_level": peor["alert_level"] if peor else "UNKNOWN",
+            "worst_level": assessment["level"],
             "worst_hazard": peor["hazard_code"] if peor else None,
             "reason": peor["reason"] if peor else None,
             "recommended_action": peor.get("recommended_action") if peor else None,
+            "assessment": assessment,
         })
     return salida

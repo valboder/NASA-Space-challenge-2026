@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from app.models import ship as ship_model
 from app.services.emergency_service import evaluate_all_active_hazards
-from app.services.assessment_status import assessment_summary
+from app.services.assessment_status import assessment_summary, LEVEL_RANK
 
 LEVEL_TO_STATE = {
     "RED": "LOCKED",
@@ -29,7 +29,10 @@ LEVEL_TO_STATE = {
     "GREEN": "NORMAL",
     "UNKNOWN": "NORMAL",
 }
-LEVEL_RANK = {"RED": 4, "ORANGE": 3, "YELLOW": 2, "GREEN": 1, "UNKNOWN": 0}
+# LEVEL_RANK se importa de assessment_status (antes se redefinía aquí con los
+# mismos valores por casualidad; dos jerarquías de severidad mantenidas a
+# mano en archivos distintos solo coinciden mientras alguien se acuerde de
+# editar las dos a la vez — una sola fuente evita que diverjan en silencio).
 
 
 def recompute_ship_state(mission_id: int, context_destination: str | None = None,

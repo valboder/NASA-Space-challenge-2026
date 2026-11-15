@@ -64,16 +64,19 @@ def parse_transcript(transcript: str) -> list[dict]:
     return found
 
 
-def ingest_voice_report(astronaut_id: int, mission_id: int, transcript: str) -> dict:
+def ingest_voice_report(astronaut_id: int, mission_id: int, transcript: str,
+                        session_id: int | None = None, operator_id: int | None = None,
+                        context_destination: str | None = None) -> dict:
     voice_log_id = voice_model.create_voice_log(astronaut_id, mission_id, transcript)
     parsed = parse_transcript(transcript)
     now_iso = datetime.now(timezone.utc).isoformat()
-    source_id = catalog.get_data_source_id("VOICE_INPUT")
+    source_id = catalog.get_data_source_id("VOICE_INPUT") if parsed else None
 
     created_observation_ids = []
+    case_effects = []
     for item in parsed:
         indicator_id = catalog.get_indicator_id(item["indicator_code"])
-        if indicator_id is None:
+        if indicator_id is None or source_id is None:
             continue
         obs_id = obs_model.record_observation(
             indicator_id=indicator_id, mission_id=mission_id, data_source_id=source_id,
@@ -83,6 +86,15 @@ def ingest_voice_report(astronaut_id: int, mission_id: int, transcript: str) -> 
             notes="Generado por recolección de voz; verificar si requiere confirmación manual.",
         )
         created_observation_ids.append(obs_id)
+        # P02: si este reporte de voz pertenece a un caso en curso, vincular
+        # y reevaluar — mismo efecto que el botón de pánico o el monitoreo
+        # pasivo. Sin session_id, el comportamiento no cambia.
+        if session_id is not None:
+            from app.services.monitoring_service import reevaluate_and_link
+            case_effects.append(reevaluate_and_link(
+                astronaut_id, mission_id, obs_id, session_id=session_id,
+                operator_id=operator_id, context_destination=context_destination,
+            ))
 
     status = "PARSED" if parsed else "FAILED"
     confidence = min(1.0, 0.5 + 0.1 * len(parsed)) if parsed else 0.0
@@ -90,7 +102,10 @@ def ingest_voice_report(astronaut_id: int, mission_id: int, transcript: str) -> 
         voice_log_id, parsed_payload={"detected": parsed}, confidence=confidence, status=status,
     )
 
-    return {
+    result = {
         "voice_log_id": voice_log_id, "status": status, "detected": parsed,
         "observation_ids": created_observation_ids, "confidence": confidence,
     }
+    if case_effects:
+        result["case_effect"] = case_effects[-1]
+    return result
